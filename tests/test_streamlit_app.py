@@ -1,8 +1,13 @@
+from pathlib import Path
+
 from streamlit.testing.v1 import AppTest
 
 
+APP_FILE = Path(__file__).resolve().parents[1] / "app.py"
+
+
 def test_app_starts_with_openbb_frozen():
-    app = AppTest.from_file("app.py", default_timeout=20)
+    app = AppTest.from_file(APP_FILE, default_timeout=20)
     app.run()
 
     assert not app.exception
