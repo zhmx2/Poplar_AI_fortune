@@ -1,0 +1,2 @@
+"""Local investment research application."""
+

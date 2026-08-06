@@ -1,0 +1,58 @@
+[
+  {
+    "institution_id": "berkshire",
+    "name": "Berkshire Hathaway Inc",
+    "name_cn": "伯克希尔·哈撒韦",
+    "cik": "0001067983",
+    "verified_source": "https://www.sec.gov/Archives/edgar/data/1067983/"
+  },
+  {
+    "institution_id": "bridgewater",
+    "name": "Bridgewater Associates, LP",
+    "name_cn": "桥水基金",
+    "cik": "0001350694",
+    "verified_source": "https://www.sec.gov/Archives/edgar/data/1350694/"
+  },
+  {
+    "institution_id": "renaissance",
+    "name": "Renaissance Technologies LLC",
+    "name_cn": "文艺复兴科技",
+    "cik": "0001037389",
+    "verified_source": "https://www.sec.gov/Archives/edgar/data/1037389/"
+  },
+  {
+    "institution_id": "pershing_square",
+    "name": "Pershing Square Capital Management, L.P.",
+    "name_cn": "潘兴广场",
+    "cik": "0001336528",
+    "verified_source": "https://www.sec.gov/Archives/edgar/data/1336528/"
+  },
+  {
+    "institution_id": "appaloosa",
+    "name": "Appaloosa LP",
+    "name_cn": "阿帕卢萨",
+    "cik": "0001656456",
+    "verified_source": "https://www.sec.gov/Archives/edgar/data/1656456/"
+  },
+  {
+    "institution_id": "soros",
+    "name": "Soros Fund Management LLC",
+    "name_cn": "索罗斯基金管理",
+    "cik": "0001029160",
+    "verified_source": "https://www.sec.gov/Archives/edgar/data/1029160/"
+  },
+  {
+    "institution_id": "tiger_global",
+    "name": "Tiger Global Management LLC",
+    "name_cn": "老虎环球",
+    "cik": "0001167483",
+    "verified_source": "https://www.sec.gov/Archives/edgar/data/1167483/"
+  },
+  {
+    "institution_id": "ark",
+    "name": "ARK Investment Management LLC",
+    "name_cn": "方舟投资",
+    "cik": "0001697748",
+    "verified_source": "https://www.sec.gov/Archives/edgar/data/1697748/"
+  }
+]
