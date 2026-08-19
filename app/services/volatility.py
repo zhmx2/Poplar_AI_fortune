@@ -148,10 +148,15 @@ class VolatilityService:
             else f"building history: {count}/252 observations"
         )
         if current_iv is None:
-            quality = "underlying IV unavailable from current data permissions"
+            quality = (
+                "partial: HV30 calculated from IBKR daily closes; "
+                "underlying IV unavailable from current API permissions"
+                if hv30 is not None
+                else "Unavailable: neither IV nor calculated HV30 is available"
+            )
         snapshot = VolatilitySnapshot(
             symbol=symbol,
-            market_date=date.today(),
+            market_date=raw.get("market_date", date.today()),
             spot_price=raw["spot_price"],
             underlying_iv=current_iv,
             hv30=hv30,
@@ -322,7 +327,19 @@ class VolatilityService:
         result_rows = []
         for row in rows:
             quality = str(row.get("data_quality", ""))
-            success = not quality.startswith("Unavailable:")
+            has_volatility = any(
+                row.get(field) is not None
+                and not pd.isna(row.get(field))
+                for field in ("underlying_iv", "hv30")
+            )
+            success = not quality.startswith("Unavailable:") and has_volatility
+            if not success and not quality.startswith("Unavailable:"):
+                quality = (
+                    "Unavailable: IBKR returned no IV or HV fields. This can occur "
+                    "before delayed regular-session data is available, when API "
+                    "market-data permissions are insufficient, or when TWS has no "
+                    "quote for the contract."
+                )
             state = volatility_state(
                 row.get("iv_hv_ratio"), row.get("ivp_52w"),
                 int(row.get("observation_count") or 0),

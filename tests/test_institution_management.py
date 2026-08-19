@@ -63,6 +63,20 @@ def test_disable_and_rename_institution_persist(tmp_path: Path):
     assert not bool(row["enabled"])
 
 
+def test_blank_display_name_restores_official_name(tmp_path: Path):
+    settings = _settings(tmp_path)
+    repo = Repository(settings.database_path)
+    service = InstitutionService(settings, repo)
+    service.client.submissions = lambda cik: _submissions()
+    added = service.add_institution("1234567", "Temporary display name")
+
+    service.update_preferences(added["institution_id"], "   ", True)
+
+    row = service.institutions(active_only=False)
+    row = row[row["cik"] == "0001234567"].iloc[0]
+    assert row["name_cn"] == "TEST VERIFIED MANAGER LLC"
+
+
 def test_cik_without_13f_is_rejected(tmp_path: Path):
     service = InstitutionService(_settings(tmp_path), Repository(tmp_path / "management.duckdb"))
     service.client.submissions = lambda cik: {

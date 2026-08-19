@@ -51,8 +51,9 @@ def render_volatility(service: VolatilityService, settings: Settings) -> None:
         )
     else:
         st.warning(
-            "TWS mode is active. Delayed IV/Greeks availability depends on your "
-            "IBKR market-data permissions; missing values are not replaced."
+            "TWS mode is active. HV30 is calculated locally from IBKR daily "
+            "closing prices. Delayed IV/Greeks still depend on market-data "
+            "permissions; missing IV is not estimated or replaced."
         )
 
     symbol = st.text_input(

@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import date
 
 import pandas as pd
 import pytest
@@ -15,6 +16,7 @@ from app.db import Repository
 from app.models import VolatilitySnapshot, utc_now
 from app.services.ibkr import IBKRService
 from app.services.volatility import VolatilityService
+from app.ui.volatility_dashboard import _median_display
 
 
 def test_volatility_calculations():
@@ -24,6 +26,12 @@ def test_volatility_calculations():
     assert iv_percentile(0.30, [0.20, 0.25, 0.35, 0.40]) == 0.5
     assert safe_ratio(0.30, 0.20) == pytest.approx(1.5)
     assert safe_ratio(0.30, 0) is None
+
+
+def test_dashboard_medians_show_na_for_missing_iv_but_keep_hv():
+    frame = pd.DataFrame({"underlying_iv": [None, None], "hv30": [0.2, 0.4]})
+    assert _median_display(frame, "underlying_iv", ".1%") == "N/A"
+    assert _median_display(frame, "hv30", ".1%") == "30.0%"
 
 
 @pytest.mark.parametrize(
@@ -153,3 +161,51 @@ def test_failed_tws_scan_is_saved_for_offline_diagnostics(tmp_path: Path):
     assert run["failed_count"] == 2
     saved = service.scan_report(run["run_id"])
     assert saved["error_message"].str.contains("TWS unavailable").all()
+
+
+def test_empty_ibkr_fields_are_failed_instead_of_false_success(tmp_path: Path):
+    settings = Settings(
+        database_path=tmp_path / "empty.duckdb",
+        sec_cache_dir=tmp_path / "cache",
+        ibkr_volatility_mode="tws",
+    )
+    ibkr = IBKRService(settings)
+    ibkr.volatility_snapshots_raw = lambda *args, **kwargs: {
+        "NVDA": {
+            "symbol": "NVDA", "spot_price": None, "underlying_iv": None,
+            "hv30": None, "market_data_type": "delayed-frozen",
+        }
+    }
+    service = VolatilityService(settings, ibkr, Repository(settings.database_path))
+    scan = service.scan(["NVDA"])
+
+    assert not bool(scan.iloc[0]["success"])
+    assert "neither IV nor calculated HV30" in scan.iloc[0]["error_message"]
+    run = service.scan_runs().iloc[0]
+    assert run["success_count"] == 0
+    assert run["failed_count"] == 1
+
+
+def test_hv_only_tws_result_is_saved_as_partial_success(tmp_path: Path):
+    settings = Settings(
+        database_path=tmp_path / "hv_only.duckdb",
+        sec_cache_dir=tmp_path / "cache",
+        ibkr_volatility_mode="tws",
+    )
+    ibkr = IBKRService(settings)
+    ibkr.volatility_snapshots_raw = lambda *args, **kwargs: {
+        "NVDA": {
+            "symbol": "NVDA", "market_date": date.today(),
+            "spot_price": 225.0, "underlying_iv": None,
+            "hv30": 0.32,
+            "market_data_type": "historical-daily; IV unavailable",
+        }
+    }
+    service = VolatilityService(settings, ibkr, Repository(settings.database_path))
+
+    scan = service.scan(["NVDA"])
+
+    assert bool(scan.iloc[0]["success"])
+    assert scan.iloc[0]["hv30"] == pytest.approx(0.32)
+    assert pd.isna(scan.iloc[0]["underlying_iv"])
+    assert "partial" in scan.iloc[0]["data_quality"]

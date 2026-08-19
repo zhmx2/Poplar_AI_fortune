@@ -15,6 +15,14 @@ from app.services.volatility import VolatilityService
 from app.ui.volatility import render_volatility
 from app.services.phase_e import PhaseEService
 from app.ui.phase_e import render_phase_e
+from app.services.phase_f import PhaseFService
+from app.services.phase_fb import PhaseFBService
+from app.services.phase_fc import PhaseFCService
+from app.ui.phase_f import render_phase_f
+from app.services.stock_turnover import StockTurnoverService
+from app.ui.stock_turnover import render_stock_turnover
+from app.services.daily_quant import DailyQuantService
+from app.services.trend_lines import TrendLineService
 
 
 st.set_page_config(
@@ -33,6 +41,12 @@ def services() -> ResearchService:
     ibkr = IBKRService(settings)
     volatility = VolatilityService(settings, ibkr, repo)
     phase_e = PhaseEService(settings, repo)
+    phase_f = PhaseFService(settings, repo)
+    phase_fb = PhaseFBService(settings, ibkr, repo)
+    phase_fc = PhaseFCService(phase_f, phase_fb, repo)
+    stock_turnover = StockTurnoverService(settings, ibkr, repo)
+    daily_quant = DailyQuantService(settings, ibkr, repo)
+    trend_lines = TrendLineService(repo)
     return ResearchService(
         ibkr,
         OpenBBService(settings),
@@ -40,6 +54,12 @@ def services() -> ResearchService:
         InstitutionService(settings, repo),
         volatility,
         phase_e,
+        phase_f,
+        phase_fb,
+        phase_fc,
+        stock_turnover,
+        daily_quant,
+        trend_lines,
     )
 
 
@@ -92,12 +112,14 @@ with st.sidebar:
         show_health(status)
 
 
-health_tab, sec_tab, volatility_tab, phase_e_tab, account_tab, positions_tab, quote_tab, archive_tab, cache_tab = st.tabs(
+health_tab, sec_tab, volatility_tab, turnover_tab, phase_e_tab, phase_f_tab, account_tab, positions_tab, quote_tab, archive_tab, cache_tab = st.tabs(
     [
         "Health",
         "SEC 13F holdings",
         "IBKR volatility",
+        "Stock turnover",
         "Macro & financials",
+        "Market liquidity",
         "Account",
         "Positions",
         "Quote",
@@ -112,8 +134,16 @@ with sec_tab:
 with volatility_tab:
     render_volatility(svc.volatility, settings)
 
+with turnover_tab:
+    render_stock_turnover(
+        svc.stock_turnover, settings, svc.daily_quant, svc.trend_lines
+    )
+
 with phase_e_tab:
     render_phase_e(svc.phase_e, settings)
+
+with phase_f_tab:
+    render_phase_f(svc.phase_f, svc.phase_fb, svc.phase_fc, settings)
 
 with health_tab:
     st.subheader("Independent data-source status")

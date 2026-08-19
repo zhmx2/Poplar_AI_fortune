@@ -147,6 +147,71 @@ class Repository:
                 )
             """)
             con.execute("""
+                CREATE TABLE IF NOT EXISTS stock_turnover_runs (
+                    run_id VARCHAR PRIMARY KEY, started_at TIMESTAMPTZ,
+                    completed_at TIMESTAMPTZ, source VARCHAR,
+                    requested_count INTEGER, success_count INTEGER,
+                    failed_count INTEGER, symbols_json VARCHAR
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS stock_turnover_estimates (
+                    run_id VARCHAR, symbol VARCHAR, success BOOLEAN,
+                    error_message VARCHAR, raw_volume DOUBLE,
+                    volume_multiplier DOUBLE, estimated_share_volume DOUBLE,
+                    price_used DOUBLE, price_basis VARCHAR,
+                    estimated_turnover_usd DOUBLE, currency VARCHAR,
+                    market_data_type VARCHAR, session_scope VARCHAR,
+                    source VARCHAR, observed_at TIMESTAMPTZ,
+                    data_quality VARCHAR,
+                    PRIMARY KEY (run_id, symbol)
+                )
+            """)
+            con.execute(
+                "ALTER TABLE stock_turnover_estimates ADD COLUMN IF NOT EXISTS "
+                "volume_scale_divisor DOUBLE DEFAULT 1"
+            )
+            con.execute(
+                "ALTER TABLE stock_turnover_estimates ADD COLUMN IF NOT EXISTS "
+                "reference_daily_volume DOUBLE"
+            )
+            # ib_async 2.x exposes TWS decimal stock sizes at a fixed 4-decimal
+            # integer scale. Early turnover batches stored that wire value as
+            # shares. Correct those legacy rows once, identified by their old
+            # data-quality text so subsequent initializations remain idempotent.
+            con.execute("""
+                UPDATE stock_turnover_estimates
+                SET estimated_share_volume = estimated_share_volume / 10000.0,
+                    estimated_turnover_usd = estimated_turnover_usd / 10000.0,
+                    data_quality = data_quality ||
+                        '; corrected ib_async fixed-decimal volume scale'
+                WHERE source = 'ibkr'
+                  AND data_quality =
+                    'Estimate = cumulative volume × price basis; not official exchange turnover'
+            """)
+            con.execute("""
+                UPDATE stock_turnover_estimates
+                SET estimated_share_volume = estimated_share_volume * 10000.0,
+                    estimated_turnover_usd = estimated_turnover_usd * 10000.0,
+                    volume_scale_divisor = 1,
+                    data_quality = replace(
+                        data_quality,
+                        '; corrected ib_async fixed-decimal volume scale',
+                        '; retained native volume scale after plausibility check'
+                    )
+                WHERE source = 'ibkr'
+                  AND raw_volume < 100000000
+                  AND data_quality LIKE
+                    '%corrected ib_async fixed-decimal volume scale%'
+            """)
+            con.execute("""
+                UPDATE stock_turnover_estimates
+                SET volume_scale_divisor = 10000
+                WHERE source = 'ibkr'
+                  AND data_quality LIKE
+                    '%corrected ib_async fixed-decimal volume scale%'
+            """)
+            con.execute("""
                 CREATE TABLE IF NOT EXISTS macro_observations (
                     series_id VARCHAR, observation_date DATE, value DOUBLE,
                     series_name VARCHAR, unit VARCHAR, frequency VARCHAR,
@@ -154,6 +219,90 @@ class Repository:
                     PRIMARY KEY (series_id, observation_date, source)
                 )
             """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS market_confirmation_bars (
+                    symbol VARCHAR, asset_name VARCHAR, asset_name_cn VARCHAR,
+                    market_role VARCHAR, market_role_cn VARCHAR, bar_date DATE,
+                    open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
+                    volume DOUBLE, source VARCHAR, fetched_at TIMESTAMPTZ,
+                    PRIMARY KEY (symbol, bar_date, source)
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS optimized_trend_lines (
+                    symbol VARCHAR, calculation_date DATE, lookback INTEGER,
+                    algorithm_version VARCHAR, price_transform VARCHAR,
+                    constraint_mode VARCHAR, window_start DATE, window_end DATE,
+                    ols_slope DOUBLE, ols_intercept DOUBLE,
+                    support_pivot_date DATE, support_pivot_price DOUBLE,
+                    support_slope DOUBLE, support_intercept DOUBLE,
+                    support_current DOUBLE, resistance_pivot_date DATE,
+                    resistance_pivot_price DOUBLE, resistance_slope DOUBLE,
+                    resistance_intercept DOUBLE, resistance_current DOUBLE,
+                    latest_close DOUBLE, channel_width DOUBLE,
+                    channel_position DOUBLE, distance_to_support DOUBLE,
+                    distance_to_resistance DOUBLE, status VARCHAR,
+                    data_warning VARCHAR, calculated_at TIMESTAMPTZ,
+                    PRIMARY KEY (
+                        symbol, calculation_date, lookback, algorithm_version
+                    )
+                )
+            """)
+            for definition in (
+                "atr14 DOUBLE", "atr_buffer DOUBLE", "support_touches INTEGER",
+                "resistance_touches INTEGER", "confirmation_days INTEGER",
+                "breakout_status VARCHAR", "robust_outlier_fraction DOUBLE",
+            ):
+                con.execute(
+                    "ALTER TABLE optimized_trend_lines ADD COLUMN IF NOT EXISTS "
+                    + definition
+                )
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS trend_line_backtests (
+                    run_id VARCHAR PRIMARY KEY, symbol VARCHAR, lookback INTEGER,
+                    mode VARCHAR, forward_days INTEGER, signal_count INTEGER,
+                    win_rate DOUBLE, average_directional_return DOUBLE,
+                    median_directional_return DOUBLE, calculated_at TIMESTAMPTZ
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS trend_line_backtest_signals (
+                    run_id VARCHAR, signal_date DATE, direction VARCHAR,
+                    entry_close DOUBLE, forward_close DOUBLE,
+                    forward_return DOUBLE, directional_return DOUBLE, win BOOLEAN,
+                    PRIMARY KEY (run_id, signal_date, direction)
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS market_pressure_scores (
+                    score_date DATE PRIMARY KEY,
+                    composite_score DOUBLE, coverage_ratio DOUBLE,
+                    available_components INTEGER,
+                    status_label VARCHAR, status_label_cn VARCHAR,
+                    status_explanation VARCHAR, status_explanation_cn VARCHAR,
+                    liquidity_source VARCHAR, market_source VARCHAR,
+                    liquidity_contraction_value DOUBLE,
+                    liquidity_contraction_score DOUBLE,
+                    nfci_value DOUBLE, nfci_score DOUBLE,
+                    real_yield_shock_value DOUBLE,
+                    real_yield_shock_score DOUBLE,
+                    credit_widening_value DOUBLE,
+                    credit_widening_score DOUBLE,
+                    equity_weakness_value DOUBLE,
+                    equity_weakness_score DOUBLE,
+                    smallcap_weakness_value DOUBLE,
+                    smallcap_weakness_score DOUBLE,
+                    hyg_weakness_value DOUBLE, hyg_weakness_score DOUBLE,
+                    dollar_strength_value DOUBLE, dollar_strength_score DOUBLE,
+                    calculated_at TIMESTAMPTZ
+                )
+            """)
+            con.execute(
+                "ALTER TABLE market_pressure_scores ADD COLUMN IF NOT EXISTS liquidity_source VARCHAR"
+            )
+            con.execute(
+                "ALTER TABLE market_pressure_scores ADD COLUMN IF NOT EXISTS market_source VARCHAR"
+            )
             con.execute("""
                 CREATE TABLE IF NOT EXISTS company_financials (
                     symbol VARCHAR, cik VARCHAR, company_name VARCHAR,
@@ -279,10 +428,11 @@ class Repository:
             con.execute(
                 """
                 UPDATE institutions
-                SET name_cn = ?, enabled = ?, updated_at = ?
+                SET name_cn = COALESCE(NULLIF(TRIM(?), ''), name),
+                    enabled = ?, updated_at = ?
                 WHERE institution_id = ?
                 """,
-                [name_cn.strip(), enabled, utc_now(), institution_id],
+                [str(name_cn or ""), enabled, utc_now(), institution_id],
             )
 
     def save_sec_filing(self, filing: dict, holdings: pd.DataFrame) -> None:
@@ -520,6 +670,96 @@ class Repository:
                    GROUP BY market_date ORDER BY market_date""", [source]
             ).df()
 
+    def save_stock_turnover_scan(self, run: dict, results: pd.DataFrame) -> None:
+        with self.connect() as con:
+            con.execute("BEGIN TRANSACTION")
+            try:
+                con.execute(
+                    """INSERT OR REPLACE INTO stock_turnover_runs
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [run[key] for key in (
+                        "run_id", "started_at", "completed_at", "source",
+                        "requested_count", "success_count", "failed_count",
+                        "symbols_json",
+                    )],
+                )
+                if not results.empty:
+                    con.register("_stock_turnover", results)
+                    con.execute("""
+                        INSERT OR REPLACE INTO stock_turnover_estimates BY NAME
+                        SELECT * FROM _stock_turnover
+                    """)
+                con.execute("COMMIT")
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
+
+    def stock_turnover_runs(self, limit: int = 100) -> pd.DataFrame:
+        with self.connect() as con:
+            return con.execute(
+                """SELECT * FROM stock_turnover_runs
+                   ORDER BY completed_at DESC LIMIT ?""", [limit]
+            ).df()
+
+    def stock_turnover_report(self, run_id: str) -> pd.DataFrame:
+        with self.connect() as con:
+            return con.execute(
+                """SELECT * FROM stock_turnover_estimates
+                   WHERE run_id = ?
+                   ORDER BY estimated_turnover_usd DESC NULLS LAST, symbol""",
+                [run_id],
+            ).df()
+
+    def stock_turnover_symbols(self) -> pd.DataFrame:
+        """Return symbols that have at least one usable saved estimate."""
+        with self.connect() as con:
+            return con.execute(
+                """SELECT DISTINCT symbol
+                   FROM stock_turnover_estimates
+                   WHERE success = TRUE
+                     AND estimated_turnover_usd IS NOT NULL
+                   ORDER BY symbol"""
+            ).df()
+
+    def stock_turnover_history(
+        self, symbol: str, start_date=None, end_date=None
+    ) -> pd.DataFrame:
+        """Return one (latest) successful observation per symbol and market day."""
+        filters = ["symbol = ?", "success = TRUE", "estimated_turnover_usd IS NOT NULL"]
+        params: list = [symbol.upper().strip()]
+        if start_date is not None:
+            filters.append("market_date >= ?")
+            params.append(start_date)
+        if end_date is not None:
+            filters.append("market_date <= ?")
+            params.append(end_date)
+        where_clause = " AND ".join(filters)
+        with self.connect() as con:
+            return con.execute(
+                f"""WITH normalized AS (
+                       SELECT *, COALESCE(
+                           TRY_CAST(session_scope AS DATE),
+                           CAST(observed_at AS DATE)
+                       ) AS market_date
+                       FROM stock_turnover_estimates
+                   ), ranked AS (
+                       SELECT *, ROW_NUMBER() OVER (
+                           PARTITION BY symbol, market_date
+                           ORDER BY observed_at DESC, run_id DESC
+                       ) AS recency_rank
+                       FROM normalized
+                       WHERE {where_clause}
+                   )
+                   SELECT market_date, symbol, estimated_share_volume,
+                          price_used, price_basis, estimated_turnover_usd,
+                          currency, market_data_type, session_scope,
+                          observed_at, data_quality
+                   FROM ranked
+                   WHERE recency_rank = 1
+                   ORDER BY market_date""",
+                params,
+            ).df()
+
     def save_macro_observations(self, frame: pd.DataFrame) -> None:
         if frame.empty:
             return
@@ -539,6 +779,104 @@ class Repository:
                 f"""SELECT * FROM macro_observations
                     WHERE series_id IN ({placeholders})
                     ORDER BY observation_date""", series_ids
+            ).df()
+
+    def save_market_confirmation_bars(self, frame: pd.DataFrame) -> None:
+        if frame.empty:
+            return
+        with self.connect() as con:
+            con.register("_market_bars", frame)
+            con.execute(
+                """INSERT OR REPLACE INTO market_confirmation_bars BY NAME
+                   SELECT * FROM _market_bars"""
+            )
+
+    def market_confirmation_bars(
+        self,
+        symbols: list[str] | tuple[str, ...] | None = None,
+    ) -> pd.DataFrame:
+        with self.connect() as con:
+            if not symbols:
+                return con.execute(
+                    """SELECT * FROM market_confirmation_bars
+                       ORDER BY bar_date, symbol"""
+                ).df()
+            normalized = [symbol.upper() for symbol in symbols]
+            placeholders = ",".join("?" for _ in normalized)
+            return con.execute(
+                f"""SELECT * FROM market_confirmation_bars
+                    WHERE symbol IN ({placeholders})
+                    ORDER BY bar_date, symbol""",
+                normalized,
+            ).df()
+
+    def save_optimized_trend_line(self, result: dict) -> None:
+        frame = pd.DataFrame([result])
+        with self.connect() as con:
+            con.register("_trend_line", frame)
+            con.execute(
+                """INSERT OR REPLACE INTO optimized_trend_lines BY NAME
+                   SELECT * FROM _trend_line"""
+            )
+
+    def optimized_trend_lines(
+        self, symbol: str | None = None, lookback: int | None = None
+    ) -> pd.DataFrame:
+        filters, params = [], []
+        if symbol:
+            filters.append("symbol = ?")
+            params.append(symbol.upper())
+        if lookback is not None:
+            filters.append("lookback = ?")
+            params.append(int(lookback))
+        where = " WHERE " + " AND ".join(filters) if filters else ""
+        with self.connect() as con:
+            return con.execute(
+                f"""SELECT * FROM optimized_trend_lines{where}
+                    ORDER BY calculation_date DESC, calculated_at DESC""",
+                params,
+            ).df()
+
+    def save_trend_line_backtest(
+        self, summary: dict, signals: pd.DataFrame
+    ) -> None:
+        summary_frame = pd.DataFrame([summary])
+        with self.connect() as con:
+            con.execute("BEGIN TRANSACTION")
+            try:
+                con.register("_backtest_summary", summary_frame)
+                con.execute(
+                    """INSERT INTO trend_line_backtests BY NAME
+                       SELECT * FROM _backtest_summary"""
+                )
+                if not signals.empty:
+                    con.register("_backtest_signals", signals)
+                    con.execute(
+                        """INSERT INTO trend_line_backtest_signals BY NAME
+                           SELECT * FROM _backtest_signals"""
+                    )
+                con.execute("COMMIT")
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
+
+    def save_market_pressure_scores(self, frame: pd.DataFrame) -> None:
+        if frame.empty:
+            return
+        with self.connect() as con:
+            con.register("_pressure_scores", frame)
+            con.execute("BEGIN TRANSACTION")
+            con.execute("DELETE FROM market_pressure_scores")
+            con.execute(
+                """INSERT OR REPLACE INTO market_pressure_scores BY NAME
+                   SELECT * FROM _pressure_scores"""
+            )
+            con.execute("COMMIT")
+
+    def market_pressure_scores(self) -> pd.DataFrame:
+        with self.connect() as con:
+            return con.execute(
+                "SELECT * FROM market_pressure_scores ORDER BY score_date"
             ).df()
 
     def save_company_financials(self, frame: pd.DataFrame) -> None:

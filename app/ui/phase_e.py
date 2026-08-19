@@ -6,6 +6,7 @@ import streamlit as st
 
 from app.config import Settings
 from app.services.phase_e import PhaseEService
+from app.ui.components import date_range_inputs
 
 
 def filter_macro_date_range(
@@ -142,17 +143,11 @@ def render_phase_e(service: PhaseEService, settings: Settings) -> None:
             macro["YoY"] = macro.groupby("series_id")["value"].pct_change(12)
             min_date = pd.Timestamp(macro["observation_date"].min()).date()
             max_date = pd.Timestamp(macro["observation_date"].max()).date()
-            selected_range = st.date_input(
-                "Date range / 日期范围",
-                value=(min_date, max_date),
-                min_value=min_date,
-                max_value=max_date,
-                key="phase_e_macro_date_range",
+            start_date, end_date = date_range_inputs(
+                min_date,
+                max_date,
+                key_prefix="phase_e_macro_date_range",
             )
-            if isinstance(selected_range, (tuple, list)) and len(selected_range) == 2:
-                start_date, end_date = selected_range
-            else:
-                start_date, end_date = min_date, max_date
             filtered_macro = filter_macro_date_range(macro, start_date, end_date)
             st.caption(
                 f"Showing {start_date:%Y-%m-%d} to {end_date:%Y-%m-%d} "
@@ -162,9 +157,9 @@ def render_phase_e(service: PhaseEService, settings: Settings) -> None:
             core, core_date = _latest_macro(filtered_macro, "CUUR0000SA0L1E")
             sentiment, sentiment_date = _latest_macro(filtered_macro, "UMCSENT")
             with st.container(horizontal=True):
-                st.metric("Headline CPI / 总体CPI", headline, headline_date, border=True)
-                st.metric("Core CPI / 核心CPI", core, core_date, border=True)
-                st.metric("Consumer sentiment / 消费者情绪", sentiment, sentiment_date, border=True)
+                st.metric("Headline CPI / 总体CPI", headline, headline_date, delta_color="off", border=True)
+                st.metric("Core CPI / 核心CPI", core, core_date, delta_color="off", border=True)
+                st.metric("Consumer sentiment / 消费者情绪", sentiment, sentiment_date, delta_color="off", border=True)
 
             cpi = filtered_macro.loc[
                 filtered_macro["series_id"].isin(
@@ -235,17 +230,13 @@ def render_phase_e(service: PhaseEService, settings: Settings) -> None:
             financials["period_end"] = pd.to_datetime(financials["period_end"])
             financial_min = financials["period_end"].min().date()
             financial_max = financials["period_end"].max().date()
-            financial_range = st.date_input(
-                "Financial period range / 财务报告期范围",
-                value=(financial_min, financial_max),
-                min_value=financial_min,
-                max_value=financial_max,
-                key="phase_e_financial_date_range",
+            financial_start, financial_end = date_range_inputs(
+                financial_min,
+                financial_max,
+                key_prefix="phase_e_financial_date_range",
+                start_label="Financial start date / 财务开始日期",
+                end_label="Financial end date / 财务结束日期",
             )
-            if isinstance(financial_range, (tuple, list)) and len(financial_range) == 2:
-                financial_start, financial_end = financial_range
-            else:
-                financial_start, financial_end = financial_min, financial_max
             financials = filter_financial_date_range(
                 financials, financial_start, financial_end
             )

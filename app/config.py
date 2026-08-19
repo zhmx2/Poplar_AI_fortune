@@ -46,6 +46,9 @@ class Settings:
     ibkr_volatility_wait_seconds: float = _float(
         "IBKR_VOLATILITY_WAIT_SECONDS", 3.0
     )
+    ibkr_us_stock_volume_multiplier: float = _float(
+        "IBKR_US_STOCK_VOLUME_MULTIPLIER", 1.0
+    )
     ibkr_option_strike_count: int = _int("IBKR_OPTION_STRIKE_COUNT", 7)
     volatility_watchlist: tuple[str, ...] = tuple(
         symbol.strip().upper()
@@ -54,6 +57,8 @@ class Settings:
         ).split(",")
         if symbol.strip()
     )
+    daily_quant_lookback_years: int = _int("DAILY_QUANT_LOOKBACK_YEARS", 3)
+    trend_line_default_lookback: int = _int("TREND_LINE_DEFAULT_LOOKBACK", 120)
     database_path: Path = ROOT / os.getenv("DATABASE_PATH", "data/investment.duckdb")
     openbb_enabled: bool = _bool("OPENBB_ENABLED", False)
     openbb_history_provider: str = os.getenv("OPENBB_HISTORY_PROVIDER", "yfinance")
@@ -73,6 +78,22 @@ class Settings:
             "PHASE_E_COMPANIES", "MSFT,AMZN,GOOGL,META"
         ).split(",") if symbol.strip()
     )
+    liquidity_mode: str = os.getenv("LIQUIDITY_MODE", "mock").strip().lower()
+    liquidity_lookback_years: int = _int("LIQUIDITY_LOOKBACK_YEARS", 10)
+    market_confirmation_mode: str = os.getenv(
+        "MARKET_CONFIRMATION_MODE", "mock"
+    ).strip().lower()
+    market_confirmation_lookback_years: int = _int(
+        "MARKET_CONFIRMATION_LOOKBACK_YEARS", 3
+    )
+    market_confirmation_basket: tuple[str, ...] = tuple(
+        symbol.strip().upper()
+        for symbol in os.getenv(
+            "MARKET_CONFIRMATION_BASKET",
+            "SPY,QQQ,IWM,TLT,HYG,LQD,GLD,UUP",
+        ).split(",")
+        if symbol.strip()
+    )
 
     def __post_init__(self) -> None:
         if self.ibkr_host not in {"127.0.0.1", "localhost", "::1"}:
@@ -86,6 +107,10 @@ class Settings:
         if not 0.5 <= self.ibkr_volatility_wait_seconds <= 15:
             raise ValueError(
                 "IBKR_VOLATILITY_WAIT_SECONDS must be between 0.5 and 15."
+            )
+        if self.ibkr_us_stock_volume_multiplier not in {1.0, 100.0}:
+            raise ValueError(
+                "IBKR_US_STOCK_VOLUME_MULTIPLIER must be 1 or 100."
             )
         if not 3 <= self.ibkr_option_strike_count <= 21:
             raise ValueError("IBKR_OPTION_STRIKE_COUNT must be between 3 and 21.")
@@ -101,3 +126,25 @@ class Settings:
                 )
         if self.macro_mode not in {"mock", "online", "offline"}:
             raise ValueError("MACRO_MODE must be mock, online, or offline.")
+        if self.liquidity_mode not in {"mock", "online", "offline"}:
+            raise ValueError("LIQUIDITY_MODE must be mock, online, or offline.")
+        if not 1 <= self.liquidity_lookback_years <= 30:
+            raise ValueError("LIQUIDITY_LOOKBACK_YEARS must be between 1 and 30.")
+        if self.market_confirmation_mode not in {"mock", "tws", "offline"}:
+            raise ValueError(
+                "MARKET_CONFIRMATION_MODE must be mock, tws, or offline."
+            )
+        if not 1 <= self.market_confirmation_lookback_years <= 5:
+            raise ValueError(
+                "MARKET_CONFIRMATION_LOOKBACK_YEARS must be between 1 and 5."
+            )
+        if not self.market_confirmation_basket:
+            raise ValueError("MARKET_CONFIRMATION_BASKET must not be empty.")
+        if len(self.market_confirmation_basket) > 20:
+            raise ValueError(
+                "MARKET_CONFIRMATION_BASKET supports at most 20 symbols."
+            )
+        if not 1 <= self.daily_quant_lookback_years <= 5:
+            raise ValueError("DAILY_QUANT_LOOKBACK_YEARS must be between 1 and 5.")
+        if not 20 <= self.trend_line_default_lookback <= 504:
+            raise ValueError("TREND_LINE_DEFAULT_LOOKBACK must be between 20 and 504.")
