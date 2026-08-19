@@ -196,6 +196,7 @@ class InstitutionService:
         started = utc_now()
         run_id = str(uuid.uuid4())
         saved_periods: list[date] = []
+        failures: list[str] = []
         try:
             submissions = self.client.submissions(institution["cik"])
             filings = self._recent_filings(submissions)
@@ -212,9 +213,27 @@ class InstitutionService:
                 if len(selected) >= quarter_count:
                     break
             for row in selected:
-                saved_periods.append(self._sync_filing(institution_id, institution, row))
+                try:
+                    saved_periods.append(
+                        self._sync_filing(institution_id, institution, row)
+                    )
+                except Exception as exc:
+                    failures.append(
+                        f"{row.get('reportDate') or 'unknown period'} "
+                        f"{row.get('accessionNumber') or 'unknown accession'}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
             if not saved_periods:
-                raise ApplicationError("No usable 13F report periods were found.")
+                detail = "; ".join(failures[:3])
+                raise ApplicationError(
+                    "No usable 13F report periods were found. " + detail
+                )
+            message = f"Saved {len(saved_periods)} report quarter(s)"
+            if failures:
+                message += (
+                    f"; skipped {len(failures)} failed quarter(s): "
+                    + "; ".join(failures[:2])
+                )
             self.repo.save_sec_sync_run(
                 {
                     "run_id": run_id,
@@ -222,7 +241,7 @@ class InstitutionService:
                     "started_at": started,
                     "completed_at": utc_now(),
                     "success": True,
-                    "message": f"Saved {len(saved_periods)} report quarter(s)",
+                    "message": message,
                     "report_period": saved_periods[0],
                     "filings_saved": len(saved_periods),
                 }
@@ -248,16 +267,41 @@ class InstitutionService:
     ) -> date:
         accession = row["accessionNumber"]
         index = self.client.filing_index(institution["cik"], accession)
-        info_name = self.client.information_table_name(
+        candidates = self.client.information_table_names(
             index, row["primaryDocument"]
         )
-        info_url = self.client.archive_url(
-            institution["cik"], accession, info_name
-        )
-        xml = self.client.get_text(info_url)
         filing_date = date.fromisoformat(row["filingDate"])
         report_period = date.fromisoformat(row["reportDate"])
-        holdings = parse_information_table(xml, filing_date)
+        candidate_errors: list[str] = []
+        info_name = ""
+        info_url = ""
+        xml = ""
+        holdings = pd.DataFrame()
+        for candidate in candidates:
+            candidate_url = self.client.archive_url(
+                institution["cik"], accession, candidate
+            )
+            try:
+                candidate_xml = self.client.get_text(candidate_url)
+                candidate_holdings = parse_information_table(
+                    candidate_xml, filing_date
+                )
+            except Exception as exc:
+                candidate_errors.append(
+                    f"{candidate}: {type(exc).__name__}: {exc}"
+                )
+                continue
+            info_name = candidate
+            info_url = candidate_url
+            xml = candidate_xml
+            holdings = candidate_holdings
+            break
+        if holdings.empty:
+            raise ApplicationError(
+                f"No usable 13F Information Table for report {report_period}, "
+                f"accession {accession}. Candidates tried: "
+                + "; ".join(candidate_errors[:5])
+            )
         now = utc_now()
         compact = accession.replace("-", "")
         source_url = (

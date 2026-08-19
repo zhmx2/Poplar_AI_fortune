@@ -11,6 +11,12 @@ from app.services.openbb import OpenBBService
 from app.services.institutions import InstitutionService
 from app.services.volatility import VolatilityService
 from app.services.phase_e import PhaseEService
+from app.services.phase_f import PhaseFService
+from app.services.phase_fb import PhaseFBService
+from app.services.phase_fc import PhaseFCService
+from app.services.stock_turnover import StockTurnoverService
+from app.services.daily_quant import DailyQuantService
+from app.services.trend_lines import TrendLineService
 
 
 class ResearchService:
@@ -24,6 +30,12 @@ class ResearchService:
         institutions: InstitutionService | None = None,
         volatility: VolatilityService | None = None,
         phase_e: PhaseEService | None = None,
+        phase_f: PhaseFService | None = None,
+        phase_fb: PhaseFBService | None = None,
+        phase_fc: PhaseFCService | None = None,
+        stock_turnover: StockTurnoverService | None = None,
+        daily_quant: DailyQuantService | None = None,
+        trend_lines: TrendLineService | None = None,
     ):
         self.ibkr = ibkr
         self.openbb = openbb
@@ -31,6 +43,12 @@ class ResearchService:
         self.institutions = institutions
         self.volatility = volatility
         self.phase_e = phase_e
+        self.phase_f = phase_f
+        self.phase_fb = phase_fb
+        self.phase_fc = phase_fc
+        self.stock_turnover = stock_turnover
+        self.daily_quant = daily_quant
+        self.trend_lines = trend_lines
 
     def health(self) -> list[HealthStatus]:
         statuses: list[HealthStatus] = []
@@ -46,6 +64,18 @@ class ResearchService:
             *(
                 (("Phase E research", self.phase_e.health),)
                 if self.phase_e is not None else ()
+            ),
+            *(
+                (("Phase F-A liquidity", self.phase_f.health),)
+                if self.phase_f is not None else ()
+            ),
+            *(
+                (("Phase F-B market confirmation", self.phase_fb.health),)
+                if self.phase_fb is not None else ()
+            ),
+            *(
+                (("Phase F-C pressure dashboard", self.phase_fc.health),)
+                if self.phase_fc is not None else ()
             ),
             *(
                 (("IBKR volatility", self.volatility.health),)

@@ -156,6 +156,7 @@ IBKR_VOLATILITY_MODE=mock
 IBKR_VOLATILITY_WAIT_SECONDS=3
 IBKR_OPTION_STRIKE_COUNT=7
 VOLATILITY_WATCHLIST=NVDA,SPY,QQQ,AAPL,MSFT
+IBKR_US_STOCK_VOLUME_MULTIPLIER=1
 ```
 
 Mock values are illustrative. After TWS is configured with Read-Only API, set
@@ -290,9 +291,139 @@ Current tables include:
 - `institution_holdings`
 - `volatility_snapshots`
 - `option_quotes`
+- `market_confirmation_bars`
 
 Future macro and company-financial modules will use this same
 DuckDB file.
+
+## Phase F-A: market liquidity and funding pressure
+
+The **Market liquidity** page adds a FRED-only, DuckDB-backed research layer.
+OpenBB and IBKR are not used by Phase F-A.
+
+Configured series:
+
+- Federal Reserve assets (`WALCL`), Treasury General Account (`WTREGEN`), and
+  overnight reverse repos (`RRPONTSYD`).
+- National Financial Conditions Index (`NFCI`) and SOFR (`SOFR`).
+- 2-year and 10-year Treasury yields (`DGS2`, `DGS10`), 10-year real yield
+  (`DFII10`), and the 10y-2y spread (`T10Y2Y`).
+- ICE BofA US High Yield option-adjusted spread (`BAMLH0A0HYM2`).
+
+The derived net-liquidity proxy is:
+
+```text
+Federal Reserve total assets - Treasury General Account - overnight reverse repos
+```
+
+Monetary components are normalized to USD billions for calculation. Weekly Fed
+assets and TGA observations are forward-filled across ON RRP observation dates.
+The result is a research proxy, not an official FRED series and not a measure of
+daily equity-fund flows. Saved raw observations retain their original units,
+frequency, source, and retrieval timestamp.
+
+Configuration:
+
+```env
+LIQUIDITY_MODE=mock
+LIQUIDITY_LOOKBACK_YEARS=10
+FRED_API_KEY=
+```
+
+Use `online` only after configuring a FRED key. `offline` performs no network
+request and reads the existing DuckDB. One failed FRED series does not discard
+successfully downloaded series; the UI reports partial-sync warnings.
+
+### H.4.1 selected indicators
+
+The Phase F-A sync also downloads a focused Federal Reserve H.4.1 dataset:
+
+- `WRBWFRBL`: reserve balances with Federal Reserve Banks, Wednesday level
+  (primary reserve series).
+- `WRESBAL`: reserve balances, weekly average (secondary reference).
+- `WALCL`: Federal Reserve total assets.
+- `TREAST`: US Treasury securities held outright.
+- `WSHOMCB`: mortgage-backed securities held outright.
+- `WSHOFADSL`: federal agency debt securities held outright.
+- `WLCFLL`: liquidity and credit facility loans.
+- `WTREGEN`: Treasury General Account.
+
+The dashboard displays reserve balances, 1-week/4-week/52-week changes,
+year-over-year change, reserves as a share of Federal Reserve total assets,
+asset composition, 4-week and 13-week securities runoff, facility-loan changes,
+and the difference between actual reserve changes and the net-liquidity proxy.
+All monetary levels are converted to USD billions for analysis while the raw
+FRED observations retain their original units in DuckDB.
+
+The QT runoff measure is the negative change in Treasury + MBS + agency debt
+holdings. A positive value means combined holdings decreased; a negative value
+means they increased. Neither the reserve metrics nor the net-liquidity proxy
+measures equity-fund flows.
+
+## Phase F-B: IBKR market confirmation basket
+
+Phase F-B adds a read-only, daily-price confirmation layer to the **Market
+liquidity** page. The default basket is:
+
+- `SPY`: broad US equities.
+- `QQQ`: growth equities.
+- `IWM`: small-cap equities.
+- `TLT`: long-duration US Treasuries.
+- `HYG`: high-yield credit.
+- `LQD`: investment-grade credit.
+- `GLD`: gold.
+- `UUP`: US-dollar proxy.
+
+Daily bars are requested in one shared read-only TWS session and saved to the
+deduplicated `market_confirmation_bars` table. The primary key is symbol,
+trading date, and source. Partial symbol failures are reported without
+discarding successful downloads. Mock and IBKR rows are strictly separated in
+the dashboard.
+
+Configuration:
+
+```env
+MARKET_CONFIRMATION_MODE=mock
+MARKET_CONFIRMATION_LOOKBACK_YEARS=3
+MARKET_CONFIRMATION_BASKET=SPY,QQQ,IWM,TLT,HYG,LQD,GLD,UUP
+```
+
+Modes are `mock`, `tws`, and `offline`. TWS mode requires the existing local,
+read-only IBKR configuration. The basket supports up to 20 symbols and the
+historical lookback is limited to 1-5 years to keep IBKR requests bounded.
+Phase F-B displays trailing returns and normalized cross-asset performance; it
+does not calculate the Phase F-C composite pressure score.
+
+## Phase F-C: composite market-pressure dashboard
+
+Phase F-C is an offline calculation and presentation layer over the
+source-isolated observations already saved by Phase F-A and Phase F-B. It makes
+no FRED or IBKR request. Recalculation writes an auditable daily history to
+`market_pressure_scores`, including raw component values, component scores,
+weights, coverage, status labels, and calculation timestamps.
+
+The 0-100 score uses eight pressure-oriented components:
+
+| Component | Weight |
+|---|---:|
+| Net-liquidity contraction (20 trading days) | 20% |
+| NFCI financial conditions | 15% |
+| 10-year real-yield change (20 trading days) | 15% |
+| High-yield OAS change (20 trading days) | 15% |
+| SPY weakness (20 trading days) | 15% |
+| IWM weakness relative to SPY | 10% |
+| HYG weakness | 5% |
+| UUP strength | 5% |
+
+Each component is transformed using only its rolling 252-observation history
+(minimum 60 observations), then clipped to 0-100. Missing components are not
+silently treated as neutral: available weights are renormalized, coverage is
+shown, and at least five of eight components are required. Status bands are:
+below 30 supportive, 30-45 mild pressure, 45-55 neutral, 55-70 elevated
+pressure, and 70 or above high pressure.
+
+This is a transparent research indicator, not an official fund-flow measure,
+forecast, trading signal, or investment recommendation.
 
 ## Tests
 
@@ -344,3 +475,41 @@ This is a research tool, not a trading system or investment recommendation.
 Poplar AI Fortune is licensed under the GNU Affero General Public License v3.0
 (`AGPL-3.0-only`). See [LICENSE](LICENSE). Third-party packages and market data
 are not relicensed by this repository; their original terms continue to apply.
+
+### Stock turnover estimate
+
+The **Stock turnover** page reuses `VOLATILITY_WATCHLIST` and requests IBKR
+daily stock bars only—no streaming quote, option contract, IV, Greeks, or
+option-chain requests. It estimates each symbol's session dollar turnover as
+the current daily-bar volume multiplied by daily WAP, then saves both the batch
+and symbol-level results in DuckDB.
+
+The value is an estimate, not an official consolidated exchange turnover.
+
+The same page also contains **Daily Quant Engine / 日线量化引擎**. It downloads
+and caches read-only IBKR daily OHLCV bars for the selected watchlist stock plus
+SPY, QQQ, and SOXX, then calculates SMA20/50/200, RSI14, 20/60-day returns,
+HV20/30, ATR14%, volume ratio, relative strength, factor scores, and a 0–100
+market-regime score. Configure the history window with
+`DAILY_QUANT_LOOKBACK_YEARS=3` (1–5 years). Scores describe the current daily
+market state and are not forecasts, recommendations, or order signals.
+Historical daily-bar volume is treated as shares and does not use the streaming
+volume multiplier setting.
+
+The engine also includes **Optimized trend channel / 最优趋势通道**. It uses
+saved IBKR OHLCV rows only: an OLS log-Close direction identifies extreme
+log-Low/log-High pivots, then an exact one-dimensional constrained solution
+produces strict support and resistance lines. The user selects the Lookback in
+the frontend (20, 60, 120, 252, or a custom 20–504 trading-day value). The
+optional `TREND_LINE_DEFAULT_LOOKBACK=120` changes only the initial UI value.
+Changing Lookback does not contact TWS. Results are versioned and upserted into
+DuckDB table `optimized_trend_lines`; version 1 does not alter the existing
+Daily Quant composite score or label channel exits as confirmed breakouts.
+
+Trend-channel version 2 (`projected_atr_channel_v2`) fits the historical
+Lookback window and projects the lines into two independent confirmation days.
+It adds a fixed `0.25 × ATR14` breakout buffer, support/resistance touch counts,
+two-close confirmation, Strict and Robust (2% residual-tail clipping) modes,
+20/60/120/252-day comparison, and a saved walk-forward breakout backtest for
+5/20/60-day forward returns. These are research diagnostics only; transaction
+costs, slippage, taxes, and position sizing are not modeled.

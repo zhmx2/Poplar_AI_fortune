@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 
+from app.analytics.volatility import historical_volatility
 from app.config import Settings
 from app.errors import DataSourceUnavailableError, friendly_ibkr_error
 from app.models import HealthStatus, Quote, utc_now
@@ -18,6 +19,28 @@ def _number(value: Any) -> float | None:
         return result if math.isfinite(result) else None
     except (TypeError, ValueError):
         return None
+
+
+IB_ASYNC_VOLUME_DECIMAL_SCALE = 10_000.0
+
+
+def _ibkr_share_volume(
+    value: Any,
+    lot_multiplier: float = 1.0,
+    reference_daily_volume: float | None = None,
+) -> tuple[float | None, float]:
+    """Normalize mixed native/fixed-4-decimal IBKR stock volume encodings."""
+    raw = _number(value)
+    if raw is None or raw < 0:
+        return None, 1.0
+    divisor = (
+        IB_ASYNC_VOLUME_DECIMAL_SCALE
+        if reference_daily_volume is not None
+        and reference_daily_volume > 0
+        and raw > reference_daily_volume * 100
+        else 1.0
+    )
+    return raw / divisor * lot_multiplier, divisor
 
 
 class IBKRService:
@@ -207,11 +230,30 @@ class IBKRService:
             progress(f"Qualifying the {symbol.upper()} stock contract")
             contract = self._stock_contract(symbol)
             progress(
-                f"Requesting delayed price, underlying IV and HV30 for "
+                f"Loading daily closing prices to calculate HV30 for "
                 f"{symbol.upper()}"
             )
+            bars = self._ib.reqHistoricalData(
+                contract, endDateTime="", durationStr="60 D",
+                barSizeSetting="1 day", whatToShow="TRADES", useRTH=True,
+                formatDate=1, keepUpToDate=False,
+                timeout=max(25, int(self.settings.ibkr_timeout_seconds * 3)),
+            )
+            closes = [
+                value for value in (_number(bar.close) for bar in bars)
+                if value is not None and value > 0
+            ]
+            latest_bar = bars[-1] if bars else None
+            spot = _number(getattr(latest_bar, "close", None))
+            hv30 = historical_volatility(closes, 30)
+            market_date = getattr(latest_bar, "date", date.today())
+            progress(
+                f"Requesting delayed underlying IV for {symbol.upper()}; "
+                "HV30 is calculated locally"
+            )
+            self._ib.reqMarketDataType(self.settings.ibkr_market_data_type)
             ticker = self._ib.reqMktData(
-                contract, genericTickList="104,106", snapshot=False
+                contract, genericTickList="106", snapshot=False
             )
             progress(
                 f"Waiting up to "
@@ -224,18 +266,20 @@ class IBKRService:
             }.get(getattr(ticker, "marketDataType", None), "unknown")
             result = {
                 "symbol": symbol.upper(),
-                "spot_price": _number(ticker.marketPrice()),
+                "market_date": pd.Timestamp(market_date).date(),
+                "spot_price": spot or _number(ticker.marketPrice()),
                 "underlying_iv": _number(ticker.impliedVolatility),
-                "hv30": _number(ticker.histVolatility),
-                "market_data_type": market_type,
+                "hv30": hv30,
+                "market_data_type": (
+                    f"historical-daily + {market_type} IV"
+                    if _number(ticker.impliedVolatility) is not None
+                    else "historical-daily; IV unavailable"
+                ),
             }
             progress(
-                f"{symbol.upper()} market data received"
-                if any(
-                    result[field] is not None
-                    for field in ("spot_price", "underlying_iv", "hv30")
-                )
-                else f"IBKR returned no fields for {symbol.upper()}"
+                f"{symbol.upper()} HV30 calculated; IV received"
+                if result["underlying_iv"] is not None
+                else f"{symbol.upper()} HV30 calculated; IV unavailable from permissions"
             )
             return result
         finally:
@@ -297,6 +341,153 @@ class IBKRService:
         finally:
             self.disconnect()
             report("Shared TWS watchlist session closed")
+
+    def _stock_turnover_on_connected(
+        self, symbol: str, progress: Callable[[str], None]
+    ) -> dict:
+        contract = None
+        try:
+            progress(f"Qualifying {symbol.upper()} stock contract")
+            contract = self._stock_contract(symbol)
+            progress(
+                f"Loading current daily volume and WAP for {symbol.upper()}"
+            )
+            bars = self._ib.reqHistoricalData(
+                contract, endDateTime="", durationStr="10 D",
+                barSizeSetting="1 day", whatToShow="TRADES", useRTH=True,
+                formatDate=1, keepUpToDate=False,
+                timeout=max(20, int(self.settings.ibkr_timeout_seconds * 2)),
+            )
+            if not bars:
+                raise ValueError(
+                    f"IBKR returned no daily bars for {symbol.upper()}."
+                )
+            latest = bars[-1]
+            reference_values = [
+                value for value in (_number(bar.volume) for bar in bars[:-1])
+                if value is not None and value > 0
+            ]
+            reference_volume = (
+                float(pd.Series(reference_values).median())
+                if reference_values else None
+            )
+            volume = _number(latest.volume)
+            wap = _number(latest.average)
+            close = _number(latest.close)
+            price_used = wap or close
+            price_basis = "Daily WAP" if wap is not None else "Daily close"
+            turnover = (
+                volume * price_used
+                if volume is not None and price_used is not None else None
+            )
+            return {
+                "symbol": symbol.upper(), "raw_volume": volume,
+                "volume_multiplier": 1.0, "volume_scale_divisor": 1.0,
+                "reference_daily_volume": reference_volume,
+                "estimated_share_volume": volume,
+                "price_used": price_used, "price_basis": price_basis,
+                "estimated_turnover_usd": turnover,
+                "currency": contract.currency or "USD",
+                "market_data_type": "historical-daily",
+                "session_scope": str(pd.Timestamp(latest.date).date()),
+            }
+        finally:
+            pass
+
+    def stock_turnover_estimates_raw(
+        self, symbols: tuple[str, ...] | list[str],
+        progress: Callable[[str], None] | None = None,
+    ) -> dict[str, dict | Exception]:
+        report = progress or (lambda message: None)
+        self.disconnect()
+        results: dict[str, dict | Exception] = {}
+        try:
+            self._connect_readonly_session(report)
+            for index, raw_symbol in enumerate(symbols, start=1):
+                symbol = raw_symbol.strip().upper()
+                report(f"Loading {symbol} ({index}/{len(symbols)})")
+                try:
+                    results[symbol] = self._stock_turnover_on_connected(symbol, report)
+                except Exception as exc:
+                    results[symbol] = exc
+            return results
+        finally:
+            self.disconnect()
+            report("Shared read-only TWS turnover session closed")
+
+    def _historical_daily_bars_on_connected(
+        self,
+        symbol: str,
+        lookback_years: int,
+        progress: Callable[[str], None],
+    ) -> pd.DataFrame:
+        progress(f"Qualifying the {symbol.upper()} historical-data contract")
+        contract = self._stock_contract(symbol)
+        progress(
+            f"Requesting {lookback_years} year(s) of daily bars for "
+            f"{symbol.upper()}"
+        )
+        bars = self._ib.reqHistoricalData(
+            contract,
+            endDateTime="",
+            durationStr=f"{lookback_years} Y",
+            barSizeSetting="1 day",
+            whatToShow="TRADES",
+            useRTH=True,
+            formatDate=1,
+            keepUpToDate=False,
+            timeout=max(30, int(self.settings.ibkr_timeout_seconds * 3)),
+        )
+        now = utc_now()
+        rows = []
+        for bar in bars:
+            bar_date = pd.Timestamp(bar.date).date()
+            rows.append(
+                {
+                    "symbol": symbol.upper(),
+                    "bar_date": bar_date,
+                    "open": _number(bar.open),
+                    "high": _number(bar.high),
+                    "low": _number(bar.low),
+                    "close": _number(bar.close),
+                    "volume": _number(bar.volume),
+                    "source": "ibkr",
+                    "fetched_at": now,
+                }
+            )
+        progress(f"Received {len(rows):,} daily bars for {symbol.upper()}")
+        return pd.DataFrame(rows)
+
+    def historical_daily_bars_batch(
+        self,
+        symbols: tuple[str, ...] | list[str],
+        lookback_years: int,
+        progress: Callable[[str], None] | None = None,
+    ) -> dict[str, pd.DataFrame | Exception]:
+        def report(message: str) -> None:
+            if progress is not None:
+                progress(message)
+
+        report("Closing any connection retained by an earlier page run")
+        self.disconnect()
+        results: dict[str, pd.DataFrame | Exception] = {}
+        try:
+            self._connect_readonly_session(report)
+            total = len(symbols)
+            for index, raw_symbol in enumerate(symbols, start=1):
+                symbol = raw_symbol.strip().upper()
+                report(f"Loading {symbol} ({index}/{total})")
+                try:
+                    results[symbol] = self._historical_daily_bars_on_connected(
+                        symbol, lookback_years, report
+                    )
+                except Exception as exc:
+                    results[symbol] = exc
+                    report(f"{symbol} failed: {type(exc).__name__}: {exc}")
+            return results
+        finally:
+            self.disconnect()
+            report("Shared TWS historical-data session closed")
 
     def option_expirations(
         self,

@@ -28,3 +28,29 @@ def test_phase_e_defaults_are_network_safe():
     )
     assert settings.macro_mode == "mock"
     assert settings.phase_e_companies == ("MSFT", "AMZN", "GOOGL", "META")
+
+
+def test_phase_f_defaults_are_network_safe():
+    settings = Settings(liquidity_mode="mock", liquidity_lookback_years=10)
+    assert settings.liquidity_mode == "mock"
+    assert settings.liquidity_lookback_years == 10
+
+
+def test_rejects_invalid_liquidity_lookback():
+    with pytest.raises(ValueError, match="LIQUIDITY_LOOKBACK_YEARS"):
+        Settings(liquidity_lookback_years=0)
+
+
+def test_phase_fb_defaults_are_bounded_and_network_safe():
+    settings = Settings(
+        market_confirmation_mode="mock",
+        market_confirmation_lookback_years=3,
+    )
+    assert settings.market_confirmation_mode == "mock"
+    assert settings.market_confirmation_lookback_years == 3
+    assert len(settings.market_confirmation_basket) <= 20
+
+
+def test_rejects_too_many_confirmation_symbols():
+    with pytest.raises(ValueError, match="at most 20"):
+        Settings(market_confirmation_basket=tuple(f"S{i}" for i in range(21)))

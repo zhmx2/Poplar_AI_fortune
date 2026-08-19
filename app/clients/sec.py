@@ -108,24 +108,41 @@ class SECClient:
         )
 
     @staticmethod
-    def information_table_name(index: dict[str, Any], primary: str) -> str:
+    def information_table_names(index: dict[str, Any], primary: str) -> list[str]:
+        """Return ranked XML candidates, excluding the filing cover document."""
         items = index.get("directory", {}).get("item", [])
-        xml_names = [
-            item.get("name", "")
-            for item in items
-            if item.get("name", "").lower().endswith(".xml")
-            and item.get("name", "") != primary
-        ]
+        primary_name = Path(primary).name.lower()
+        xml_items = []
+        for item in items:
+            name = str(item.get("name", ""))
+            if not name.lower().endswith(".xml"):
+                continue
+            if Path(name).name.lower() == primary_name:
+                continue
+            try:
+                size = int(item.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            xml_items.append((name, size))
         ranked = sorted(
-            xml_names,
-            key=lambda name: (
-                not any(token in name.lower() for token in ("info", "table", "13f")),
-                name.lower(),
+            xml_items,
+            key=lambda pair: (
+                not any(
+                    token in pair[0].lower()
+                    for token in ("info", "table", "13f")
+                ),
+                -pair[1],
+                pair[0].lower(),
             ),
         )
         if not ranked:
             raise ApplicationError("No 13F Information Table XML was found.")
-        return ranked[0]
+        return [name for name, _ in ranked]
+
+    @staticmethod
+    def information_table_name(index: dict[str, Any], primary: str) -> str:
+        """Backward-compatible first candidate accessor."""
+        return SECClient.information_table_names(index, primary)[0]
 
     @staticmethod
     def archive_url(cik: str, accession: str, filename: str) -> str:

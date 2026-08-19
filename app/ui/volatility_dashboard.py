@@ -15,11 +15,17 @@ def _run_label(row: pd.Series) -> str:
     return f"{completed} | {row['success_count']}/{row['requested_count']} succeeded | {row['source']}"
 
 
+def _median_display(frame: pd.DataFrame, column: str, fmt: str) -> str:
+    values = pd.to_numeric(frame.get(column), errors="coerce").dropna()
+    return "N/A" if values.empty else format(float(values.median()), fmt)
+
+
 def render_watchlist_dashboard(service: VolatilityService, settings: Settings) -> None:
     st.divider()
     st.subheader("Watchlist volatility dashboard / 自选股波动率分析")
     st.caption(
         "Each scan is saved as a DuckDB batch and remains available offline. "
+        "HV30 is calculated from IBKR daily closes; IV remains permission-dependent. "
         "Watchlist: " + ", ".join(settings.volatility_watchlist)
     )
 
@@ -38,6 +44,12 @@ def render_watchlist_dashboard(service: VolatilityService, settings: Settings) -
                 state="complete" if failed == 0 else "error",
                 expanded=failed > 0,
             )
+            if failed:
+                st.warning(
+                    "A symbol counts as successful only when IBKR returns IV or HV. "
+                    "Rows containing only empty fields are now reported as failed. "
+                    "/ 只有IBKR返回IV或HV时才计为成功；全部字段为空的记录现在会明确计为失败。"
+                )
         except Exception as exc:
             status.update(label="Watchlist scan could not be saved", state="error", expanded=True)
             st.error(f"Watchlist scan failed: {type(exc).__name__}: {exc}")
@@ -60,8 +72,9 @@ def render_watchlist_dashboard(service: VolatilityService, settings: Settings) -
         st.metric("Requested / 请求", int(run["requested_count"]), border=True)
         st.metric("Succeeded / 成功", int(run["success_count"]), border=True)
         st.metric("Failed / 失败", int(run["failed_count"]), border=True)
-        st.metric("Median IV / IV中位数", "N/A" if successful.empty else f"{successful['underlying_iv'].median():.1%}", border=True)
-        st.metric("Median IV/HV", "N/A" if successful.empty else f"{successful['iv_hv_ratio'].median():.2f}", border=True)
+        st.metric("Median IV / IV中位数", _median_display(successful, "underlying_iv", ".1%"), border=True)
+        st.metric("Median HV30 / HV30中位数", _median_display(successful, "hv30", ".1%"), border=True)
+        st.metric("Median IV/HV", _median_display(successful, "iv_hv_ratio", ".2f"), border=True)
         st.metric("IV premium / 溢价数", int((successful["status_label"] == "IV premium").sum()), border=True)
 
     labels = sorted(report["status_label"].dropna().unique().tolist())
@@ -78,7 +91,8 @@ def render_watchlist_dashboard(service: VolatilityService, settings: Settings) -
         filtered = filtered.loc[~filtered["success"]]
     if selected_labels:
         filtered = filtered.loc[filtered["status_label"].isin(selected_labels)]
-    filtered = filtered.loc[filtered["iv_hv_ratio"].fillna(-1) >= minimum_ratio]
+    if minimum_ratio > 0:
+        filtered = filtered.loc[filtered["iv_hv_ratio"] >= minimum_ratio]
     filtered = filtered.sort_values(sort_by, ascending=sort_by == "symbol", na_position="last")
 
     st.dataframe(

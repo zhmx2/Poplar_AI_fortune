@@ -1,18 +1,37 @@
 from types import SimpleNamespace
 from pathlib import Path
+from datetime import date, timedelta
 
 import pytest
 
 from app.config import Settings
 from app.errors import DataSourceUnavailableError
 from app.errors import friendly_ibkr_error
-from app.services.ibkr import IBKRService, _number
+from app.services.ibkr import IBKRService, _ibkr_share_volume, _number
+
+
+def daily_bars(count=40, *, final_volume=1_250_000, final_wap=200.0):
+    start = date(2026, 6, 1)
+    return [
+        SimpleNamespace(
+            date=start + timedelta(days=index),
+            close=100.0 + index,
+            volume=final_volume if index == count - 1 else 1_000_000,
+            average=final_wap if index == count - 1 else 150.0,
+        )
+        for index in range(count)
+    ]
 
 
 def test_number_filters_invalid_market_values():
     assert _number(float("nan")) is None
     assert _number("not-a-number") is None
     assert _number(12.5) == 12.5
+
+
+def test_ib_async_fixed_decimal_volume_is_normalized_to_shares():
+    assert _ibkr_share_volume(973_108_500_000, reference_daily_volume=66_800_753) == (97_310_850, 10_000)
+    assert _ibkr_share_volume(10_294, reference_daily_volume=518_332) == (10_294, 1)
 
 
 def test_ibkr_service_exposes_no_order_methods():
@@ -39,9 +58,11 @@ def test_volatility_snapshot_retries_with_fresh_client_id(monkeypatch):
         marketPrice=lambda: 100.0,
     )
     fake_ib = SimpleNamespace(
+        reqMarketDataType=lambda value: None,
         reqMktData=lambda *args, **kwargs: ticker,
         sleep=lambda seconds: None,
         cancelMktData=lambda contract: None,
+        reqHistoricalData=lambda *args, **kwargs: daily_bars(),
     )
 
     def connect(client_id=None):
@@ -59,6 +80,69 @@ def test_volatility_snapshot_retries_with_fresh_client_id(monkeypatch):
     assert attempts == [41, 42]
     assert service._snapshot_client_offset == 2
     assert result["underlying_iv"] == 0.40
+
+
+def test_missing_iv_keeps_locally_calculated_hv30(monkeypatch):
+    service = IBKRService(Settings(sec_mode="mock", ibkr_market_data_type=3))
+    empty = SimpleNamespace(
+        marketDataType=3, impliedVolatility=float("nan"),
+        histVolatility=float("nan"), marketPrice=lambda: float("nan"),
+    )
+    requested_types = []
+    fake_ib = SimpleNamespace(
+        reqMarketDataType=lambda value: requested_types.append(value),
+        reqMktData=lambda *args, **kwargs: empty,
+        sleep=lambda seconds: None,
+        cancelMktData=lambda contract: None,
+        reqHistoricalData=lambda *args, **kwargs: daily_bars(),
+    )
+    service._ib = fake_ib
+    monkeypatch.setattr(service, "_stock_contract", lambda symbol: object())
+
+    result = service._volatility_fields_on_connected("NVDA", lambda message: None)
+
+    assert requested_types == [3]
+    assert result["market_data_type"] == "historical-daily; IV unavailable"
+    assert result["underlying_iv"] is None
+    assert result["hv30"] is not None
+
+
+def test_stock_turnover_uses_stock_volume_and_price_only(monkeypatch):
+    service = IBKRService(Settings(
+        sec_mode="mock", ibkr_us_stock_volume_multiplier=1.0
+    ))
+    contract = SimpleNamespace(currency="USD")
+    fake_ib = SimpleNamespace(
+        reqHistoricalData=lambda *args, **kwargs: daily_bars(),
+    )
+    service._ib = fake_ib
+    monkeypatch.setattr(service, "_stock_contract", lambda symbol: contract)
+
+    result = service._stock_turnover_on_connected("NVDA", lambda message: None)
+
+    assert result["estimated_share_volume"] == 1_250_000
+    assert result["price_basis"] == "Daily WAP"
+    assert result["estimated_turnover_usd"] == 250_000_000
+    assert result["market_data_type"] == "historical-daily"
+
+
+def test_stock_turnover_daily_bars_ignore_streaming_lot_setting(monkeypatch):
+    service = IBKRService(Settings(
+        sec_mode="mock", ibkr_us_stock_volume_multiplier=100.0
+    ))
+    contract = SimpleNamespace(currency="USD")
+    service._ib = SimpleNamespace(
+        reqHistoricalData=lambda *args, **kwargs: daily_bars(
+            final_volume=10, final_wap=50.0
+        ),
+    )
+    monkeypatch.setattr(service, "_stock_contract", lambda symbol: contract)
+
+    result = service._stock_turnover_on_connected("MSFT", lambda message: None)
+
+    assert result["estimated_share_volume"] == 10
+    assert result["price_basis"] == "Daily WAP"
+    assert result["estimated_turnover_usd"] == 500
 
 
 @pytest.mark.parametrize("operation", ["health", "accounts", "positions"])

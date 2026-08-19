@@ -14,6 +14,14 @@ def _can_style(frame: pd.DataFrame) -> bool:
     return frame.shape[0] * frame.shape[1] <= STYLER_SAFE_CELL_LIMIT
 
 
+def _institution_label(row) -> str:
+    official_name = str(row.name).strip()
+    display_name = str(row.name_cn or "").strip() or official_name
+    if display_name.casefold() == official_name.casefold():
+        return f"{official_name} (CIK {row.cik})"
+    return f"{display_name} · SEC: {official_name} (CIK {row.cik})"
+
+
 def _apply_column_preferences(
     service: InstitutionService,
     table_key: str,
@@ -129,6 +137,12 @@ def _render_institution_management(
                 )
 
         st.markdown("**Saved institutions / 已保存机构**")
+        st.caption(
+            "Edit Display name / 显示名称, then click Save changes. "
+            "SEC official name and CIK remain read-only. Clear a display name "
+            "to restore the SEC official name. / 修改显示名称后点击保存；SEC官方名称"
+            "和CIK不可修改。清空显示名称将恢复为SEC官方名称。"
+        )
         all_institutions = service.institutions(active_only=False).copy()
         editor_frame = all_institutions[
             [
@@ -149,7 +163,11 @@ def _render_institution_management(
                 "name": st.column_config.TextColumn(
                     "SEC official name / SEC官方名称", pinned=True
                 ),
-                "name_cn": "Display name / 显示名称",
+                "name_cn": st.column_config.TextColumn(
+                    "Display name / 显示名称",
+                    help="Editable local name saved in DuckDB / 可编辑并保存到DuckDB的本地名称",
+                    max_chars=120,
+                ),
                 "cik": "CIK",
                 "enabled": st.column_config.CheckboxColumn(
                     "Enabled / 启用"
@@ -163,15 +181,32 @@ def _render_institution_management(
             },
         )
         if st.button(
-            "Save institution preferences",
+            "Save changes / 保存修改",
             icon=":material/save:",
             key="save_institution_preferences",
+            type="primary",
         ):
-            for row in edited.itertuples():
+            original = all_institutions.set_index("institution_id")
+            changed = 0
+            for row in edited.itertuples(index=False):
+                saved = original.loc[row.institution_id]
+                new_name = str(row.name_cn or "").strip()
+                old_name = str(saved["name_cn"] or "").strip()
+                new_enabled = bool(row.enabled)
+                if new_name == old_name and new_enabled == bool(saved["enabled"]):
+                    continue
                 service.update_preferences(
-                    row.institution_id, row.name_cn, bool(row.enabled)
+                    row.institution_id, new_name, new_enabled
                 )
-            st.success("Institution display names and enabled status were saved.")
+                changed += 1
+            if changed:
+                st.success(
+                    f"Saved {changed} institution update(s) to DuckDB. / "
+                    f"已将 {changed} 项机构修改保存到DuckDB。"
+                )
+                st.rerun()
+            else:
+                st.info("No changes to save. / 没有需要保存的修改。")
 
 
 def _highlight_options(row: pd.Series) -> list[str]:
@@ -531,7 +566,7 @@ def render_sec_holdings(service: InstitutionService, settings: Settings) -> None
         )
         return
     labels = {
-        row.institution_id: f"{row.name_cn} · {row.name} (CIK {row.cik})"
+        row.institution_id: _institution_label(row)
         for row in institutions.itertuples()
     }
     institution_id = st.selectbox(
